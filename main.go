@@ -63,31 +63,43 @@ func main() {
 
 	db.AddQueryHook(bundebug.NewQueryHook(bundebug.WithVerbose(true)))
 
-	// Register many to many model so bun can better recognize m2m relation.
-	// This should be done before you use the model for the first time.
-	db.RegisterModel((*OrderToItemM2M)(nil))
-
 	if err := createSchema(ctx, db); err != nil {
 		panic(err)
 	}
 
-	if err := InsertQuery(ctx, db); err != nil {
-		panic(err)
-	}
+	// Register many to many model so bun can better recognize m2m relation.
+	// This should be done before you use the model for the first time.
+	db.RegisterModel((*OrderToItemM2M)(nil))
 
 	// concurrently, bun does not support m2m relation for models with same name.
 	wg := sync.WaitGroup{}
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		if err := selectUsingHasMany(ctx, db); err != nil {
+
+		// insert can be happening concurrently
+		if err := InsertQuery(ctx, db); err != nil {
 			panic(err)
+		}
+
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for range 10 {
+			if err := selectUsingHasMany(ctx, db); err != nil {
+				panic(err)
+			}
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := selectUsingM2M(ctx, db); err != nil {
-			panic(err)
+
+		for range 10 {
+			if err := selectUsingM2M(ctx, db); err != nil {
+				panic(err)
+			}
 		}
 	}()
 
@@ -174,8 +186,8 @@ func InsertQuery(ctx context.Context, db *bun.DB) error {
 		&Item{ID: 1},
 		&Item{ID: 2},
 		&Order{ID: 1},
-		&OrderToItemM2M{OrderToItem: OrderToItem{OrderID: 1, ItemID: 1}},
-		&OrderToItemM2M{OrderToItem: OrderToItem{OrderID: 1, ItemID: 2}},
+		&OrderToItem{OrderID: 1, ItemID: 1},
+		&OrderToItem{OrderID: 1, ItemID: 2},
 	}
 	for _, value := range values {
 		if _, err := db.NewInsert().Model(value).Exec(ctx); err != nil {
