@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -37,7 +38,20 @@ type OrderM2M struct {
 	ItemID        int64
 
 	// Order and Item in join:Order=Item are fields in OrderToItem model
-	Items []Item `bun:"rel:has-many"`
+	ItemsM2M []OrderToItemM2M `bun:"rel:has-many,join:id=order_id" json:"-"`
+
+	Items []ItemM2M `bun:"-" json:",omitempty"`
+}
+
+func (o *OrderM2M) PostQuery() {
+	o.Items = make([]ItemM2M, 0)
+	if len(o.ItemsM2M) > 0 {
+		for _, item := range o.ItemsM2M {
+			if item.Item != nil {
+				o.Items = append(o.Items, *item.Item)
+			}
+		}
+	}
 }
 
 type ItemM2M struct {
@@ -46,16 +60,29 @@ type ItemM2M struct {
 	OrderID       int64
 
 	// Order and Item in join:Order=Item are fields in OrderToItem model
-	Orders []Order `bun:"rel:has-many"`
+	OrdersM2M []OrderToItemM2M `bun:"rel:has-many,join:id=item_id" json:"-"`
+
+	Orders []OrderM2M `bun:"-" json:",omitempty"`
 }
 
-// type OrderToItemM2M struct {
-// 	bun.BaseModel `bun:"table:order_to_items,alias:order_to_items_m2m"`
-// 	OrderID       int64     `bun:",pk"`
-// 	Order         *OrderM2M `bun:"rel:belongs-to,join:order_id=id"`
-// 	ItemID        int64     `bun:",pk"`
-// 	Item          *ItemM2M  `bun:"rel:belongs-to,join:item_id=id"`
-// }
+func (i *ItemM2M) PostQuery() {
+	i.Orders = make([]OrderM2M, 0)
+	if len(i.OrdersM2M) > 0 {
+		for _, order := range i.OrdersM2M {
+			if order.Order != nil {
+				i.Orders = append(i.Orders, *order.Order)
+			}
+		}
+	}
+}
+
+type OrderToItemM2M struct {
+	bun.BaseModel `bun:"table:order_to_items,alias:order_to_items_m2m"`
+	OrderID       int64     `bun:",pk"`
+	Order         *OrderM2M `bun:"rel:belongs-to,join:order_id=id" json:",omitempty"`
+	ItemID        int64     `bun:",pk"`
+	Item          *ItemM2M  `bun:"rel:belongs-to,join:item_id=id" json:",omitempty"`
+}
 
 func main() {
 	ctx := context.Background()
@@ -136,51 +163,53 @@ func selectUsingM2M(ctx context.Context, db *bun.DB) error {
 	order := new(OrderM2M)
 	if err := db.NewSelect().
 		Model(order).
-		Relation("Items", func(sq *bun.SelectQuery) *bun.SelectQuery {
-			sq.Join("JOIN order_to_items").
-				JoinOn("order_to_items.item_id = items.id")
-			return sq
-		}).
+		Relation("ItemsM2M").
+		Relation("ItemsM2M.Item").
 		Order("orders.id ASC").
 		Limit(1).
 		Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	fmt.Println("Order", order.ID, "Items", order.Items)
+	order.PostQuery()
+	fmt.Println("Order:", order.ID, "Items:", len(order.Items), toJson(order.Items))
 	fmt.Println()
 
 	order = new(OrderM2M)
 	if err := db.NewSelect().
 		Model(order).
-		Relation("Items", func(sq *bun.SelectQuery) *bun.SelectQuery {
-			sq.Join("JOIN order_to_items").
-				JoinOn("order_to_items.item_id = items.id").
-				OrderExpr("items.id DESC")
-			return sq
-		}).
+		Relation("ItemsM2M").
+		Relation("ItemsM2M.Item").
 		Limit(1).
 		Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	fmt.Println("Order", order.ID, "Items", order.Items)
+	order.PostQuery()
+	fmt.Println("Order:", order.ID, "Items:", len(order.Items), toJson(order.Items))
 	fmt.Println()
 
 	item := new(ItemM2M)
 	if err := db.NewSelect().
 		Model(item).
-		Relation("Orders", func(sq *bun.SelectQuery) *bun.SelectQuery {
-			sq.Join("JOIN order_to_items").
-				JoinOn("order_to_items.order_id = orders.id")
-			return sq
-		}).
+		Relation("OrdersM2M").
+		Relation("OrdersM2M.Order").
 		Order("items.id ASC").
 		Limit(1).
 		Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	fmt.Println("Item", item.ID, "Order", item.Orders)
+	item.PostQuery()
+	fmt.Println("Item:", item.ID, "Orders:", len(item.Orders), toJson(item.Orders))
 
 	return nil
+}
+
+func toJson(v interface{}) string {
+	// Convert to JSON string
+	jsonStr, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(jsonStr)
 }
 
 func createSchema(ctx context.Context, db *bun.DB) error {
